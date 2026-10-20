@@ -165,7 +165,7 @@ def generate():
 
 
 def ig(method, path, **params):
-    params["access_token"] = os.environ["IG_ACCESS_TOKEN"]
+    params["access_token"] = "".join(os.environ["IG_ACCESS_TOKEN"].split())
     r = requests.request(method, f"{GRAPH}/{path}", params=params, timeout=60)
     if not r.ok:
         sys.exit(f"Erreur Instagram {r.status_code}: {r.text}")
@@ -186,7 +186,7 @@ def wait_ready(container_id):
 def post(base_url):
     day_dir = max(p for p in OUT.iterdir() if p.is_dir())
     meta = json.loads((day_dir / "meta.json").read_text(encoding="utf-8"))
-    user = os.environ["IG_USER_ID"]
+    user = os.environ["IG_USER_ID"].strip()
     urls = [f"{base_url.rstrip('/')}/{meta['day']}/{i + 1}.jpg" for i in range(meta["slides"])]
 
     if len(urls) == 1:
