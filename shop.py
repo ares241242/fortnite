@@ -22,6 +22,7 @@ GRAPH = "https://graph.instagram.com/v21.0"
 OUT = Path("out")
 FONT_FILE = Path(__file__).parent / "fonts" / "LilitaOne-Regular.ttf"
 HANDLE = os.environ.get("IG_HANDLE", "@zzazo0")
+CREATOR_CODE = os.environ.get("CREATOR_CODE", "IMAN")
 
 # Format Instagram 4:5 portrait
 W, H = 1080, 1350
@@ -263,6 +264,25 @@ def header(slide, day, page, n_pages, big=False, y0=0):
     d.text((W - 30 - pw / 2, 45), ptxt, font=pf, fill=(20, 12, 40), anchor="mm")
 
 
+def code_pill(img, cy, size=34):
+    """Pastille jaune « CODE CRÉATEUR : IMAN » centrée sur la hauteur cy."""
+    d = ImageDraw.Draw(img)
+    f_lbl, f_code = font(int(size * 0.8)), font(size + 8)
+    lbl, code = "CODE CRÉATEUR : ", CREATOR_CODE
+    tw = d.textlength(lbl, font=f_lbl) + d.textlength(code, font=f_code)
+    pw, ph = tw + size * 1.6, size * 1.9
+    x0, y0 = W / 2 - pw / 2, cy - ph / 2
+    sh = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    ImageDraw.Draw(sh).rounded_rectangle((x0 + 4, y0 + 6, x0 + pw + 4, y0 + ph + 6), radius=ph / 2, fill=(0, 0, 0, 140))
+    img.alpha_composite(sh.filter(ImageFilter.GaussianBlur(6)))
+    d = ImageDraw.Draw(img)
+    d.rounded_rectangle((x0, y0, x0 + pw, y0 + ph), radius=ph / 2, fill=YELLOW + (255,),
+                        outline=(255, 255, 255, 255), width=3)
+    x = W / 2 - tw / 2
+    d.text((x, cy + 2), lbl, font=f_lbl, fill=(40, 20, 80), anchor="lm")
+    d.text((x + d.textlength(lbl, font=f_lbl), cy + 2), code, font=f_code, fill=(20, 10, 40), anchor="lm")
+
+
 def footer(slide, text):
     d = ImageDraw.Draw(slide)
     d.text((W // 2, H - 24), text, font=font(24), fill=(200, 190, 255), anchor="mm")
@@ -307,14 +327,15 @@ def generate():
     header(slide, day, 1, n_slides, big=True)
     m, gap, top = 36, 20, 320
     cw = (W - 2 * m - (HERO_COLS - 1) * gap) // HERO_COLS
-    ch = (H - top - 80 - (HERO_ROWS - 1) * gap) // HERO_ROWS
+    ch = (H - top - 150 - (HERO_ROWS - 1) * gap) // HERO_ROWS
     for k in range(min(HERO_N, len(items))):
         r, c = divmod(k, HERO_COLS)
         paste_with_shadow(slide, draw_card(items[k], thumbs[k], vbuck, cw, ch, big=True),
                           (m + c * (cw + gap), top + r * (ch + gap)))
     d = ImageDraw.Draw(slide)
-    shadow_text(d, (W // 2, H - 44), f"{total} OBJETS AUJOURD'HUI  •  GLISSE POUR TOUT VOIR  >>",
-                font(30), YELLOW, offset=2)
+    shadow_text(d, (W // 2, H - 112), f"{total} OBJETS AUJOURD'HUI  •  GLISSE POUR TOUT VOIR  >>",
+                font(30), "white", offset=2)
+    code_pill(slide, H - 52, 30)
     slide.convert("RGB").save(out / "1.jpg", "JPEG", quality=92)
 
     # 2) Grilles
@@ -329,14 +350,14 @@ def generate():
             r, c = divmod(k, COLS)
             paste_with_shadow(slide, draw_card(items[idx], thumbs[idx], vbuck, cw, ch),
                               (m + c * (cw + gap), top + r * (ch + gap)))
-        footer(slide, f"La boutique chaque jour sur {HANDLE}")
+        footer(slide, f"CODE CRÉATEUR : {CREATOR_CODE}   •   {HANDLE}")
         slide.convert("RGB").save(out / f"{s + 1}.jpg", "JPEG", quality=92)
 
     # 3) Story verticale 9:16 (marges hautes/basses laissées libres pour l'interface Instagram)
     SH = 1920
     story = background(SH)
-    header(story, day, 0, 0, big=True, y0=170)
-    cols, rows, m, gap, top, bot = 3, 3, 36, 20, 520, 1600
+    header(story, day, 0, 0, big=True, y0=140)
+    cols, rows, m, gap, top, bot = 3, 3, 36, 20, 470, 1460
     cw = (W - 2 * m - (cols - 1) * gap) // cols
     ch = (bot - top - (rows - 1) * gap) // rows
     for k in range(min(cols * rows, len(items))):
@@ -344,15 +365,16 @@ def generate():
         paste_with_shadow(story, draw_card(items[k], thumbs[k], vbuck, cw, ch, big=True),
                           (m + c * (cw + gap), top + r * (ch + gap)))
     d = ImageDraw.Draw(story)
-    shadow_text(d, (W // 2, 1660), f"{total} OBJETS AUJOURD'HUI", font(44), YELLOW, offset=3)
-    shadow_text(d, (W // 2, 1718), f"TOUTE LA BOUTIQUE SUR {HANDLE}", font(32), "white", offset=2)
+    code_pill(story, 1545, 44)
+    shadow_text(d, (W // 2, 1640), f"{total} OBJETS  •  TOUTE LA BOUTIQUE SUR {HANDLE}", font(32), "white", offset=2)
     story.convert("RGB").save(out / "story.jpg", "JPEG", quality=92)
 
     top5 = ", ".join(i["name"] for i in items[:5])
     caption = (f"🛒 Boutique Fortnite du {date_fr(day)} !\n\n"
                f"À ne pas manquer : {top5}…\n\n"
                "Glisse pour tout voir ➡️\n\n"
-               "#fortnite #boutiquefortnite #fortniteshop #itemshop #fortnitefr #skin")
+               f"💛 Soutiens-moi en utilisant le code créateur {CREATOR_CODE} dans la boutique !\n\n"
+               "#fortnite #boutiquefortnite #fortniteshop #itemshop #fortnitefr #skin #EpicPartner")
     (out / "meta.json").write_text(json.dumps({"day": day, "slides": n_slides, "caption": caption},
                                               ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"{n_slides} image(s) générée(s) dans {out}")
