@@ -14,41 +14,39 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import requests
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 SHOP_URL = "https://fortnite-api.com/v2/shop?language=fr"
 GRAPH = "https://graph.instagram.com/v21.0"
 OUT = Path("out")
+FONT_FILE = Path(__file__).parent / "fonts" / "LilitaOne-Regular.ttf"
+HANDLE = os.environ.get("IG_HANDLE", "@zzazo0")
 
 # Format Instagram 4:5 portrait
 W, H = 1080, 1350
+MAX_SLIDES = 10  # limite d'un carrousel via l'API
+
+# Couverture : les 6 objets phares en grand
+HERO_COLS, HERO_ROWS = 3, 2
+HERO_N = HERO_COLS * HERO_ROWS
+# Pages suivantes : grille 5 x 5
 COLS, ROWS = 5, 5
 PER_SLIDE = COLS * ROWS
-MAX_SLIDES = 10  # limite d'un carrousel via l'API
-MARGIN, GAP, HEADER = 30, 12, 160
-CARD_W = (W - 2 * MARGIN - (COLS - 1) * GAP) // COLS
-CARD_H = (H - HEADER - MARGIN - (ROWS - 1) * GAP) // ROWS
-TEXT_H = 54
 
-RARITY = {
-    "common": "#7b7b7b", "uncommon": "#4c9a2a", "rare": "#2f7bd6",
-    "epic": "#8a3fd1", "legendary": "#d4772a", "mythic": "#c9a227",
-    "marvel": "#b3262d", "dc": "#2b4fa8", "dark": "#a0158f", "icon": "#1d8aa3",
-    "starwars": "#222222", "gaminglegends": "#4a2fb8", "shadow": "#3a3a3a",
-    "slurp": "#16a7b5", "frozen": "#6fb4dd", "lava": "#c2452d", "lego": "#d9a400",
-}
+YELLOW = (255, 214, 0)
+BG_TOP, BG_BOTTOM = (40, 22, 98), (9, 6, 32)
 MONTHS = ["janvier", "février", "mars", "avril", "mai", "juin", "juillet",
           "août", "septembre", "octobre", "novembre", "décembre"]
+_fonts = {}
 
 
 def font(size):
-    for name in ("DejaVuSans-Bold.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-                 "arialbd.ttf", "C:/Windows/Fonts/arialbd.ttf"):
+    if size not in _fonts:
         try:
-            return ImageFont.truetype(name, size)
+            _fonts[size] = ImageFont.truetype(str(FONT_FILE), size)
         except OSError:
-            pass
-    return ImageFont.load_default(size=size)
+            _fonts[size] = ImageFont.load_default(size=size)
+    return _fonts[size]
 
 
 def date_fr(iso):
@@ -56,76 +54,215 @@ def date_fr(iso):
     return f"{int(d)} {MONTHS[int(m) - 1]} {y}"
 
 
+def hex_rgb(h, default=(90, 90, 110)):
+    try:
+        h = h.lstrip("#")[:6]
+        return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
+    except (AttributeError, ValueError):
+        return default
+
+
+def mix(a, b, t):
+    return tuple(int(a[i] + (b[i] - a[i]) * t) for i in range(3))
+
+
+def gradient(size, top, bottom):
+    g = Image.new("RGB", (1, 256))
+    for y in range(256):
+        g.putpixel((0, y), mix(top, bottom, y / 255))
+    return g.resize(size, Image.BICUBIC)
+
+
+def glow(size, color, strength=200):
+    """Halo radial doux centré."""
+    w, h = size
+    m = Image.new("L", (w, h), 0)
+    ImageDraw.Draw(m).ellipse((w * 0.12, h * 0.05, w * 0.88, h * 0.75), fill=strength)
+    m = m.filter(ImageFilter.GaussianBlur(min(w, h) / 6))
+    layer = Image.new("RGBA", (w, h), color + (0,))
+    layer.putalpha(m)
+    return layer
+
+
 def parse_entry(e):
-    """Renvoie (nom, prix, image_url, couleur) ou None pour les pistes musicales seules."""
+    """Extrait les infos d'une offre (None pour les pistes musicales seules)."""
     br = e.get("brItems") or []
     others = (e.get("cars") or []) + (e.get("instruments") or []) + (e.get("legoKits") or [])
     if not br and not others:
-        return None  # pistes musicales : on les ignore
+        return None
     first = (br or others)[0]
     name = (e.get("bundle") or {}).get("name") or first.get("name") or first.get("title") or "?"
 
     img = None
-    nda = e.get("newDisplayAsset") or {}
-    renders = nda.get("renderImages") or []
+    renders = (e.get("newDisplayAsset") or {}).get("renderImages") or []
     if renders:
         img = renders[0].get("image")
     img = img or (e.get("bundle") or {}).get("image")
     if not img:
         ims = first.get("images") or {}
-        img = ims.get("featured") or ims.get("icon") or ims.get("large") or ims.get("small") or ims.get("smallIcon")
+        img = ims.get("featured") or ims.get("icon") or ims.get("large") or ims.get("small")
 
-    rarity = ((first.get("series") or {}).get("backendValue") or "").lower().replace("series", "")
-    rarity = rarity if rarity in RARITY else (first.get("rarity") or {}).get("value", "common")
-    color = RARITY.get(rarity.lower(), RARITY["common"])
-    return name, e.get("finalPrice", 0), img, color
+    colors = e.get("colors") or {}
+    c1 = hex_rgb(colors.get("color1"))
+    c3 = hex_rgb(colors.get("color3") or colors.get("color2"), c1)
+    txt = hex_rgb(colors.get("textBackgroundColor"), mix(c1, (0, 0, 0), 0.7))
+    if 0.299 * txt[0] + 0.587 * txt[1] + 0.114 * txt[2] > 90:  # bandeau trop clair : on l'assombrit
+        txt = mix(txt, (0, 0, 0), 0.55)
+
+    final, regular = e.get("finalPrice", 0), e.get("regularPrice", 0)
+    banner = (e.get("banner") or {})
+    if banner.get("backendValue") == "AmountOff" and regular > final:
+        badge = f"-{regular - final:,}".replace(",", " ")
+    else:
+        badge = (banner.get("value") or "").upper()
+    return {"name": name, "price": final, "regular": regular, "img": img,
+            "top": c3, "bottom": c1, "strip": txt, "badge": badge}
 
 
-def download(url, size):
+def download(url, max_side=480):
     try:
         r = requests.get(url, timeout=30)
         r.raise_for_status()
         im = Image.open(io.BytesIO(r.content)).convert("RGBA")
-        im.thumbnail(size, Image.LANCZOS)
+        im.thumbnail((max_side, max_side), Image.LANCZOS)
         return im
     except Exception:
         return None
 
 
-def fit_text(draw, text, f, max_w):
-    if draw.textlength(text, font=f) <= max_w:
-        return text
-    while text and draw.textlength(text + "…", font=f) > max_w:
-        text = text[:-1]
-    return text + "…"
+def fit_font(draw, text, max_w, size, min_size):
+    while size > min_size and draw.textlength(text, font=font(size)) > max_w:
+        size -= 1
+    f = font(size)
+    if draw.textlength(text, font=f) > max_w:
+        while text and draw.textlength(text + "…", font=f) > max_w:
+            text = text[:-1]
+        text += "…"
+    return text, f
 
 
-def draw_card(item, thumb, vbuck):
-    name, price, _, color = item
-    card = Image.new("RGB", (CARD_W, CARD_H), color)
-    # dégradé sombre vers le bas
-    shade = Image.new("L", (1, CARD_H))
-    for y in range(CARD_H):
-        shade.putpixel((0, y), int(150 * y / CARD_H))
-    card.paste((10, 10, 25), (0, 0), shade.resize((CARD_W, CARD_H)))
+def shadow_text(draw, xy, text, f, fill, anchor="mm", offset=3):
+    draw.text((xy[0] + offset, xy[1] + offset), text, font=f, fill=(0, 0, 0), anchor=anchor)
+    draw.text(xy, text, font=f, fill=fill, anchor=anchor)
+
+
+def draw_card(item, thumb, vbuck, w, h, big=False):
+    radius = 22 if big else 14
+    strip_h = int(h * (0.24 if big else 0.27))
+    card = gradient((w, h), mix(item["top"], (255, 255, 255), 0.12), item["bottom"]).convert("RGBA")
+    card.alpha_composite(glow((w, h - strip_h), (255, 255, 255), 150 if big else 120))
+
+    # Objet, agrandi pour remplir la tuile
     if thumb:
-        x = (CARD_W - thumb.width) // 2
-        y = (CARD_H - TEXT_H - thumb.height) // 2
-        card.paste(thumb, (x, y), thumb)
+        area_w, area_h = w - 8, h - strip_h - 6
+        s = min(area_w / thumb.width, area_h / thumb.height)
+        t = thumb.resize((max(1, int(thumb.width * s)), max(1, int(thumb.height * s))), Image.LANCZOS)
+        card.alpha_composite(t, ((w - t.width) // 2, h - strip_h - t.height))
+
     d = ImageDraw.Draw(card)
-    d.rectangle((0, CARD_H - TEXT_H, CARD_W, CARD_H), fill=(15, 15, 30))
-    d.rectangle((0, CARD_H - TEXT_H, CARD_W, CARD_H - TEXT_H + 3), fill=color)
-    f_name, f_price = font(16), font(16)
-    d.text((CARD_W // 2, CARD_H - TEXT_H + 15), fit_text(d, name, f_name, CARD_W - 10),
-           font=f_name, fill="white", anchor="mm")
-    ptxt = f"{price:,}".replace(",", " ")
-    pw = d.textlength(ptxt, font=f_price) + (22 if vbuck else 0)
-    px = int((CARD_W - pw) // 2)
-    if vbuck:
-        card.paste(vbuck, (px, CARD_H - 15 - vbuck.height // 2), vbuck)
-        px += 22
-    d.text((px, CARD_H - 15), ptxt, font=f_price, fill="#e8e8f0", anchor="lm")
+    # Bandeau du nom et du prix
+    d.rectangle((0, h - strip_h, w, h), fill=item["strip"] + (255,))
+    d.rectangle((0, h - strip_h, w, h - strip_h + (4 if big else 3)), fill=mix(item["top"], (255, 255, 255), 0.35))
+
+    name = item["name"].upper()
+    name_y = h - strip_h + strip_h * 0.33
+    txt, f = fit_font(d, name, w - 16, 34 if big else 19, 22 if big else 13)
+    shadow_text(d, (w // 2, name_y), txt, f, "white", offset=2)
+
+    # Prix
+    pf = font(32 if big else 18)
+    price = f"{item['price']:,}".replace(",", " ")
+    icon = vbuck.resize((pf.size + 4, pf.size + 4), Image.LANCZOS) if vbuck else None
+    old = f"{item['regular']:,}".replace(",", " ") if item["regular"] > item["price"] else ""
+    of = font(24 if big else 14)
+    gap = 6
+    total = (icon.width + gap if icon else 0) + d.textlength(price, font=pf) + \
+            (gap * 2 + d.textlength(old, font=of) if old else 0)
+    x = int((w - total) / 2)
+    py = int(h - strip_h * 0.3)
+    if icon:
+        card.alpha_composite(icon, (x, py - icon.height // 2))
+        x += icon.width + gap
+    d.text((x, py), price, font=pf, fill=(235, 235, 245), anchor="lm")
+    if old:
+        x += d.textlength(price, font=pf) + gap * 2
+        d.text((x, py), old, font=of, fill=(170, 170, 185), anchor="lm")
+        ow = d.textlength(old, font=of)
+        d.line((x, py, x + ow, py), fill=(170, 170, 185), width=2)
+
+    # Badge (NOUVEAU, réduction...)
+    if item["badge"]:
+        bf = font(24 if big else 13)
+        btxt, bf = fit_font(d, item["badge"], w - 30, bf.size, 10)
+        bw = d.textlength(btxt, font=bf) + (24 if big else 14)
+        bh = bf.size + (14 if big else 8)
+        d.rounded_rectangle((8, 8, 8 + bw, 8 + bh), radius=bh // 2, fill=YELLOW + (255,))
+        d.text((8 + bw / 2, 8 + bh / 2 + 1), btxt, font=bf, fill=(20, 12, 40), anchor="mm")
+
+    # Bord lumineux + coins arrondis
+    d.rounded_rectangle((0, 0, w - 1, h - 1), radius=radius,
+                        outline=mix(item["top"], (255, 255, 255), 0.45) + (255,), width=3 if big else 2)
+    mask = Image.new("L", (w, h), 0)
+    ImageDraw.Draw(mask).rounded_rectangle((0, 0, w - 1, h - 1), radius=radius, fill=255)
+    card.putalpha(mask)
     return card
+
+
+def background():
+    bg = gradient((W, H), BG_TOP, BG_BOTTOM).convert("RGBA")
+    # rayons lumineux en éventail depuis le haut
+    rays = Image.new("L", (W, H), 0)
+    rd = ImageDraw.Draw(rays)
+    for k in range(-6, 7, 2):
+        rd.polygon([(W / 2, -200), (W / 2 + k * 160 - 60, H), (W / 2 + k * 160 + 60, H)], fill=26)
+    rays = rays.filter(ImageFilter.GaussianBlur(30))
+    light = Image.new("RGBA", (W, H), (140, 110, 255, 0))
+    light.putalpha(rays)
+    bg.alpha_composite(light)
+    bg.alpha_composite(glow((W, 600), (120, 90, 255), 90), (0, -150))
+    return bg
+
+
+def paste_with_shadow(slide, card, xy):
+    sh = Image.new("RGBA", (card.width + 30, card.height + 30), (0, 0, 0, 0))
+    m = Image.new("L", sh.size, 0)
+    ImageDraw.Draw(m).rounded_rectangle((15, 15, 15 + card.width, 15 + card.height), radius=18, fill=150)
+    sh.putalpha(m.filter(ImageFilter.GaussianBlur(8)))
+    slide.alpha_composite(sh, (xy[0] - 15 + 4, xy[1] - 15 + 7))
+    slide.alpha_composite(card, xy)
+
+
+def header(slide, day, page, n_pages, big=False):
+    d = ImageDraw.Draw(slide)
+    if big:
+        shadow_text(d, (W // 2, 92), "BOUTIQUE", font(118), "white", offset=5)
+        shadow_text(d, (W // 2, 196), "FORTNITE", font(92), YELLOW, offset=5)
+        y = 268
+    else:
+        shadow_text(d, (W // 2 - 8, 58), "BOUTIQUE ", font(64), "white", anchor="rm", offset=4)
+        shadow_text(d, (W // 2 - 8, 58), " FORTNITE", font(64), YELLOW, anchor="lm", offset=4)
+        y = 120
+    # pastille date
+    df = font(30 if big else 26)
+    txt = date_fr(day).upper()
+    tw = d.textlength(txt, font=df) + 44
+    pill = Image.new("RGBA", slide.size, (0, 0, 0, 0))
+    ImageDraw.Draw(pill).rounded_rectangle((W / 2 - tw / 2, y - 22, W / 2 + tw / 2, y + 22),
+                                           radius=22, fill=(255, 255, 255, 45))
+    slide.alpha_composite(pill)
+    d = ImageDraw.Draw(slide)
+    d.text((W // 2, y + 1), txt, font=df, fill="white", anchor="mm")
+    # numéro de page
+    pf = font(24)
+    ptxt = f"{page}/{n_pages}"
+    pw = d.textlength(ptxt, font=pf) + 26
+    d.rounded_rectangle((W - 30 - pw, 26, W - 30, 62), radius=18, fill=YELLOW + (255,))
+    d.text((W - 30 - pw / 2, 45), ptxt, font=pf, fill=(20, 12, 40), anchor="mm")
+
+
+def footer(slide, text):
+    d = ImageDraw.Draw(slide)
+    d.text((W // 2, H - 24), text, font=font(24), fill=(200, 190, 255), anchor="mm")
 
 
 def fetch_shop():
@@ -147,31 +284,54 @@ def generate():
     data = fetch_shop()
     day = data["date"][:10]
     items = [p for p in (parse_entry(e) for e in data["entries"]) if p]
-    items.sort(key=lambda i: -i[1])  # les plus chers en premier
-    items = items[:PER_SLIDE * MAX_SLIDES]
-    print(f"{len(items)} objets dans la boutique du {day}")
+    items.sort(key=lambda i: -i["price"])  # les plus chers en premier
+    total = len(items)
+    items = items[:HERO_N + PER_SLIDE * (MAX_SLIDES - 1)]
+    print(f"{total} objets dans la boutique du {day}")
 
     with ThreadPoolExecutor(16) as ex:
-        thumbs = list(ex.map(lambda i: download(i[2], (CARD_W - 8, CARD_H - TEXT_H - 8)) if i[2] else None, items))
-    vbuck = download(data.get("vbuckIcon") or "https://fortnite-api.com/images/vbuck.png", (18, 18))
+        thumbs = list(ex.map(lambda i: download(i["img"]) if i["img"] else None, items))
+    vbuck = download(data.get("vbuckIcon") or "https://fortnite-api.com/images/vbuck.png", 64)
 
     out = OUT / day
     out.mkdir(parents=True, exist_ok=True)
-    n_slides = math.ceil(len(items) / PER_SLIDE)
-    for s in range(n_slides):
-        slide = Image.new("RGB", (W, H), (18, 14, 40))
-        d = ImageDraw.Draw(slide)
-        d.text((W // 2, 62), "BOUTIQUE FORTNITE", font=font(58), fill="white", anchor="mm")
-        d.text((W // 2, 118), f"{date_fr(day)}  •  {s + 1}/{n_slides}", font=font(30), fill="#f5c542", anchor="mm")
-        for k, idx in enumerate(range(s * PER_SLIDE, min((s + 1) * PER_SLIDE, len(items)))):
-            r, c = divmod(k, COLS)
-            slide.paste(draw_card(items[idx], thumbs[idx], vbuck),
-                        (MARGIN + c * (CARD_W + GAP), HEADER + r * (CARD_H + GAP)))
-        slide.save(out / f"{s + 1}.jpg", "JPEG", quality=90)
+    rest = len(items) - HERO_N
+    n_slides = 1 + max(0, math.ceil(rest / PER_SLIDE))
+    bg = background()
 
-    top = ", ".join(i[0] for i in items[:5])
+    # 1) Couverture
+    slide = bg.copy()
+    header(slide, day, 1, n_slides, big=True)
+    m, gap, top = 36, 20, 320
+    cw = (W - 2 * m - (HERO_COLS - 1) * gap) // HERO_COLS
+    ch = (H - top - 80 - (HERO_ROWS - 1) * gap) // HERO_ROWS
+    for k in range(min(HERO_N, len(items))):
+        r, c = divmod(k, HERO_COLS)
+        paste_with_shadow(slide, draw_card(items[k], thumbs[k], vbuck, cw, ch, big=True),
+                          (m + c * (cw + gap), top + r * (ch + gap)))
+    d = ImageDraw.Draw(slide)
+    shadow_text(d, (W // 2, H - 44), f"{total} OBJETS AUJOURD'HUI  •  GLISSE POUR TOUT VOIR  >>",
+                font(30), YELLOW, offset=2)
+    slide.convert("RGB").save(out / "1.jpg", "JPEG", quality=92)
+
+    # 2) Grilles
+    m, gap, top, bottom = 24, 10, 160, 52
+    cw = (W - 2 * m - (COLS - 1) * gap) // COLS
+    ch = (H - top - bottom - (ROWS - 1) * gap) // ROWS
+    for s in range(1, n_slides):
+        slide = bg.copy()
+        header(slide, day, s + 1, n_slides)
+        start = HERO_N + (s - 1) * PER_SLIDE
+        for k, idx in enumerate(range(start, min(start + PER_SLIDE, len(items)))):
+            r, c = divmod(k, COLS)
+            paste_with_shadow(slide, draw_card(items[idx], thumbs[idx], vbuck, cw, ch),
+                              (m + c * (cw + gap), top + r * (ch + gap)))
+        footer(slide, f"La boutique chaque jour sur {HANDLE}")
+        slide.convert("RGB").save(out / f"{s + 1}.jpg", "JPEG", quality=92)
+
+    top5 = ", ".join(i["name"] for i in items[:5])
     caption = (f"🛒 Boutique Fortnite du {date_fr(day)} !\n\n"
-               f"À ne pas manquer : {top}…\n\n"
+               f"À ne pas manquer : {top5}…\n\n"
                "Glisse pour tout voir ➡️\n\n"
                "#fortnite #boutiquefortnite #fortniteshop #itemshop #fortnitefr #skin")
     (out / "meta.json").write_text(json.dumps({"day": day, "slides": n_slides, "caption": caption},
