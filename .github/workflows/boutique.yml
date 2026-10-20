@@ -1,0 +1,58 @@
+name: Boutique Fortnite -> Instagram
+
+on:
+  schedule:
+    - cron: "15 0 * * *"   # tous les jours à 00h15 UTC (la boutique change à 00h00 UTC)
+  workflow_dispatch:        # bouton "Run workflow" pour tester à la main
+
+permissions:
+  contents: write
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    env:
+      GH_PAT: ${{ secrets.GH_PAT }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install -r requirements.txt
+
+      - name: Générer les images de la boutique
+        run: python shop.py generate
+
+      # Instagram doit pouvoir télécharger les images depuis une URL publique :
+      # on les pousse sur la branche "images" du dépôt (écrasée chaque jour).
+      - name: Héberger les images
+        working-directory: out
+        run: |
+          git init -q -b images
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .
+          git commit -qm "Boutique du jour"
+          git push -qf "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" images
+
+      - name: Publier sur Instagram
+        env:
+          IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
+          IG_USER_ID: ${{ secrets.IG_USER_ID }}
+        run: python shop.py post "https://raw.githubusercontent.com/${{ github.repository }}/images"
+
+      # Le jeton Instagram expire après 60 jours : on le renouvelle à chaque exécution
+      # et on le réenregistre dans les secrets (nécessite le secret GH_PAT).
+      - name: Renouveler le jeton Instagram
+        if: ${{ env.GH_PAT != '' }}
+        env:
+          IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
+        run: |
+          NEW=$(curl -sf "https://graph.instagram.com/refresh_access_token?grant_type=ig_refresh_token&access_token=$IG_ACCESS_TOKEN" | jq -r .access_token)
+          echo "::add-mask::$NEW"
+          if [ -n "$NEW" ] && [ "$NEW" != "null" ]; then
+            GH_TOKEN="$GH_PAT" gh secret set IG_ACCESS_TOKEN --body "$NEW" --repo "${{ github.repository }}"
+            echo "Jeton renouvelé."
+          fi
