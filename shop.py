@@ -2,7 +2,8 @@
 
 Usage :
   python shop.py generate            # télécharge la boutique et crée out/<date>/1.jpg, 2.jpg...
-  python shop.py post <base_url>     # publie les images (accessibles via <base_url>/<date>/N.jpg)
+  python shop.py post <base_url> [all|feed|story]
+      # publie le carrousel et/ou la story (images accessibles via <base_url>/<date>/...)
 """
 import io
 import json
@@ -208,15 +209,15 @@ def draw_card(item, thumb, vbuck, w, h, big=False):
     return card
 
 
-def background():
-    bg = gradient((W, H), BG_TOP, BG_BOTTOM).convert("RGBA")
+def background(h=H):
+    bg = gradient((W, h), BG_TOP, BG_BOTTOM).convert("RGBA")
     # rayons lumineux en éventail depuis le haut
-    rays = Image.new("L", (W, H), 0)
+    rays = Image.new("L", (W, h), 0)
     rd = ImageDraw.Draw(rays)
     for k in range(-6, 7, 2):
-        rd.polygon([(W / 2, -200), (W / 2 + k * 160 - 60, H), (W / 2 + k * 160 + 60, H)], fill=26)
+        rd.polygon([(W / 2, -200), (W / 2 + k * 160 - 60, h), (W / 2 + k * 160 + 60, h)], fill=26)
     rays = rays.filter(ImageFilter.GaussianBlur(30))
-    light = Image.new("RGBA", (W, H), (140, 110, 255, 0))
+    light = Image.new("RGBA", (W, h), (140, 110, 255, 0))
     light.putalpha(rays)
     bg.alpha_composite(light)
     bg.alpha_composite(glow((W, 600), (120, 90, 255), 90), (0, -150))
@@ -232,12 +233,12 @@ def paste_with_shadow(slide, card, xy):
     slide.alpha_composite(card, xy)
 
 
-def header(slide, day, page, n_pages, big=False):
+def header(slide, day, page, n_pages, big=False, y0=0):
     d = ImageDraw.Draw(slide)
     if big:
-        shadow_text(d, (W // 2, 92), "BOUTIQUE", font(118), "white", offset=5)
-        shadow_text(d, (W // 2, 196), "FORTNITE", font(92), YELLOW, offset=5)
-        y = 268
+        shadow_text(d, (W // 2, y0 + 92), "BOUTIQUE", font(118), "white", offset=5)
+        shadow_text(d, (W // 2, y0 + 196), "FORTNITE", font(92), YELLOW, offset=5)
+        y = y0 + 268
     else:
         shadow_text(d, (W // 2 - 8, 58), "BOUTIQUE ", font(64), "white", anchor="rm", offset=4)
         shadow_text(d, (W // 2 - 8, 58), " FORTNITE", font(64), YELLOW, anchor="lm", offset=4)
@@ -252,6 +253,8 @@ def header(slide, day, page, n_pages, big=False):
     slide.alpha_composite(pill)
     d = ImageDraw.Draw(slide)
     d.text((W // 2, y + 1), txt, font=df, fill="white", anchor="mm")
+    if not n_pages:
+        return
     # numéro de page
     pf = font(24)
     ptxt = f"{page}/{n_pages}"
@@ -329,6 +332,22 @@ def generate():
         footer(slide, f"La boutique chaque jour sur {HANDLE}")
         slide.convert("RGB").save(out / f"{s + 1}.jpg", "JPEG", quality=92)
 
+    # 3) Story verticale 9:16 (marges hautes/basses laissées libres pour l'interface Instagram)
+    SH = 1920
+    story = background(SH)
+    header(story, day, 0, 0, big=True, y0=170)
+    cols, rows, m, gap, top, bot = 3, 3, 36, 20, 520, 1600
+    cw = (W - 2 * m - (cols - 1) * gap) // cols
+    ch = (bot - top - (rows - 1) * gap) // rows
+    for k in range(min(cols * rows, len(items))):
+        r, c = divmod(k, cols)
+        paste_with_shadow(story, draw_card(items[k], thumbs[k], vbuck, cw, ch, big=True),
+                          (m + c * (cw + gap), top + r * (ch + gap)))
+    d = ImageDraw.Draw(story)
+    shadow_text(d, (W // 2, 1660), f"{total} OBJETS AUJOURD'HUI", font(44), YELLOW, offset=3)
+    shadow_text(d, (W // 2, 1718), f"TOUTE LA BOUTIQUE SUR {HANDLE}", font(32), "white", offset=2)
+    story.convert("RGB").save(out / "story.jpg", "JPEG", quality=92)
+
     top5 = ", ".join(i["name"] for i in items[:5])
     caption = (f"🛒 Boutique Fortnite du {date_fr(day)} !\n\n"
                f"À ne pas manquer : {top5}…\n\n"
@@ -358,14 +377,24 @@ def wait_ready(container_id):
     sys.exit(f"Le conteneur {container_id} n'est jamais prêt")
 
 
-def post(base_url):
+def post(base_url, what="all"):
+    """what : "all" (carrousel + story), "feed" (carrousel seul) ou "story" (story seule)."""
     day_dir = max(p for p in OUT.iterdir() if p.is_dir())
     meta = json.loads((day_dir / "meta.json").read_text(encoding="utf-8"))
     user = os.environ["IG_USER_ID"].strip()
-    urls = [f"{base_url.rstrip('/')}/{meta['day']}/{i + 1}.jpg" for i in range(meta["slides"])]
+    base = f"{base_url.rstrip('/')}/{meta['day']}"
+    if what in ("all", "feed"):
+        post_feed(user, [f"{base}/{i + 1}.jpg" for i in range(meta["slides"])], meta["caption"])
+    if what in ("all", "story"):
+        cid = ig("POST", f"{user}/media", image_url=f"{base}/story.jpg", media_type="STORIES")["id"]
+        wait_ready(cid)
+        res = ig("POST", f"{user}/media_publish", creation_id=cid)
+        print(f"Story publiée ! id={res['id']}")
 
+
+def post_feed(user, urls, caption):
     if len(urls) == 1:
-        creation = ig("POST", f"{user}/media", image_url=urls[0], caption=meta["caption"])["id"]
+        creation = ig("POST", f"{user}/media", image_url=urls[0], caption=caption)["id"]
     else:
         children = []
         for u in urls:
@@ -373,7 +402,7 @@ def post(base_url):
             wait_ready(cid)
             children.append(cid)
         creation = ig("POST", f"{user}/media", media_type="CAROUSEL",
-                      children=",".join(children), caption=meta["caption"])["id"]
+                      children=",".join(children), caption=caption)["id"]
     wait_ready(creation)
     res = ig("POST", f"{user}/media_publish", creation_id=creation)
     print(f"Publié sur Instagram ! id={res['id']}")
@@ -383,6 +412,6 @@ if __name__ == "__main__":
     if len(sys.argv) >= 2 and sys.argv[1] == "generate":
         generate()
     elif len(sys.argv) >= 3 and sys.argv[1] == "post":
-        post(sys.argv[2])
+        post(sys.argv[2], sys.argv[3] if len(sys.argv) >= 4 else "all")
     else:
         sys.exit(__doc__)

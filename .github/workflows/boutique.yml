@@ -5,7 +5,13 @@ on:
     # 00h01 UTC = 1 min après le changement de boutique
     # (2h01 en France l'été, 1h01 l'hiver : toujours juste après le reset)
     - cron: "1 0 * * *"
-  workflow_dispatch:        # bouton "Run workflow" pour tester à la main
+  workflow_dispatch:        # bouton "Run workflow" pour lancer à la main
+    inputs:
+      quoi:
+        description: "Que publier ?"
+        type: choice
+        options: [all, feed, story]
+        default: all
 
 permissions:
   contents: write
@@ -37,8 +43,8 @@ jobs:
           git commit -qm "Boutique du jour"
           git push -qf "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" images
 
-      - name: Publier sur Instagram
+      - name: Publier sur Instagram (carrousel + story)
         env:
           IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
           IG_USER_ID: ${{ secrets.IG_USER_ID }}
-        run: python shop.py post "https://raw.githubusercontent.com/${{ github.repository }}/images"
+        run: python shop.py post "https://raw.githubusercontent.com/${{ github.repository }}/images" "${{ inputs.quoi || 'all' }}"
