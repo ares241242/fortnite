@@ -1,0 +1,40 @@
+name: Renouveler le jeton Instagram
+
+# Le jeton Instagram expire 60 jours après son dernier renouvellement.
+# Ce workflow le renouvelle chaque lundi pour qu'il n'expire jamais.
+on:
+  schedule:
+    - cron: "0 6 * * 1"   # chaque lundi à 06h00 UTC
+  workflow_dispatch:
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    env:
+      GH_PAT: ${{ secrets.GH_PAT }}
+    steps:
+      - name: Renouveler
+        env:
+          IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          OLD=$(echo -n "$IG_ACCESS_TOKEN" | tr -d '[:space:]')
+          RES=$(curl -s "https://graph.instagram.com/refresh_access_token?grant_type=ig_refresh_token&access_token=$OLD")
+          NEW=$(echo "$RES" | jq -r '.access_token // empty')
+          if [ -z "$NEW" ]; then
+            echo "Échec du renouvellement : $(echo "$RES" | jq -c '.error // .')"
+            echo "(Normal si le jeton a moins de 24 h. Sinon, regénère-le sur Meta.)"
+            exit 1
+          fi
+          echo "::add-mask::$NEW"
+          echo "Jeton valable encore $(( $(echo "$RES" | jq -r .expires_in) / 86400 )) jours."
+          if [ "$NEW" = "$OLD" ]; then
+            echo "Même jeton, prolongé : rien d'autre à faire."
+          elif [ -n "$GH_PAT" ]; then
+            GH_TOKEN="$GH_PAT" gh secret set IG_ACCESS_TOKEN --body "$NEW" --repo "$REPO"
+            echo "Nouveau jeton enregistré dans les secrets."
+          else
+            echo "Instagram a renvoyé un NOUVEAU jeton, mais aucun secret GH_PAT pour l'enregistrer."
+            echo "Ajoute un secret GH_PAT (voir README) ou recolle un jeton dans IG_ACCESS_TOKEN."
+            exit 1
+          fi

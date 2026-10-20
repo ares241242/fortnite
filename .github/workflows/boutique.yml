@@ -11,8 +11,6 @@ permissions:
 jobs:
   post:
     runs-on: ubuntu-latest
-    env:
-      GH_PAT: ${{ secrets.GH_PAT }}
     steps:
       - uses: actions/checkout@v4
 
@@ -42,17 +40,3 @@ jobs:
           IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
           IG_USER_ID: ${{ secrets.IG_USER_ID }}
         run: python shop.py post "https://raw.githubusercontent.com/${{ github.repository }}/images"
-
-      # Le jeton Instagram expire après 60 jours : on le renouvelle à chaque exécution
-      # et on le réenregistre dans les secrets (nécessite le secret GH_PAT).
-      - name: Renouveler le jeton Instagram
-        if: ${{ env.GH_PAT != '' }}
-        env:
-          IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
-        run: |
-          NEW=$(curl -sf "https://graph.instagram.com/refresh_access_token?grant_type=ig_refresh_token&access_token=$IG_ACCESS_TOKEN" | jq -r .access_token)
-          echo "::add-mask::$NEW"
-          if [ -n "$NEW" ] && [ "$NEW" != "null" ]; then
-            GH_TOKEN="$GH_PAT" gh secret set IG_ACCESS_TOKEN --body "$NEW" --repo "${{ github.repository }}"
-            echo "Jeton renouvelé."
-          fi
