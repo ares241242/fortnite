@@ -36,9 +36,10 @@ Instagram → Paramètres → Type de compte et outils → Passer à un compte p
 | `IG_USER_ID` | l'ID de l'étape 2 |
 | `GH_PAT` | *(recommandé)* un jeton GitHub pour renouveler le jeton Instagram automatiquement |
 
-Pour `GH_PAT` : https://github.com/settings/personal-access-tokens/new → accès à ce dépôt
-uniquement → permission **Secrets : Read and write** → choisis une expiration longue.
-Sans lui, il faudra recoller un nouveau jeton Instagram tous les 60 jours.
+Le workflow « Renouveler le jeton Instagram » prolonge le jeton chaque lundi.
+`GH_PAT` n'est utile que si Instagram renvoie un jeton différent (le workflow échoue alors
+et GitHub t'envoie un e-mail) : https://github.com/settings/personal-access-tokens/new →
+accès à ce dépôt uniquement → permission **Secrets : Read and write** → expiration longue.
 
 ### 4. Tester
 Onglet **Actions** → « Boutique Fortnite -> Instagram » → **Run workflow**.
