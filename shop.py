@@ -128,8 +128,23 @@ def draw_card(item, thumb, vbuck):
     return card
 
 
+def fetch_shop():
+    """Attend (jusqu'à 20 min) que la boutique du jour soit en ligne juste après le reset."""
+    today = time.strftime("%Y-%m-%d", time.gmtime())
+    for _ in range(40):
+        try:
+            data = requests.get(SHOP_URL, timeout=60).json()["data"]
+            if data["date"][:10] == today:
+                return data
+            print(f"Boutique encore à la date du {data['date'][:10]}, nouvelle tentative dans 30 s…")
+        except Exception as e:
+            print(f"API indisponible ({e}), nouvelle tentative dans 30 s…")
+        time.sleep(30)
+    sys.exit("La boutique du jour n'est pas disponible")
+
+
 def generate():
-    data = requests.get(SHOP_URL, timeout=60).json()["data"]
+    data = fetch_shop()
     day = data["date"][:10]
     items = [p for p in (parse_entry(e) for e in data["entries"]) if p]
     items.sort(key=lambda i: -i[1])  # les plus chers en premier

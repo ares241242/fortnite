@@ -2,7 +2,9 @@ name: Boutique Fortnite -> Instagram
 
 on:
   schedule:
-    - cron: "15 0 * * *"   # tous les jours à 00h15 UTC (la boutique change à 00h00 UTC)
+    # 00h01 UTC = 1 min après le changement de boutique
+    # (2h01 en France l'été, 1h01 l'hiver : toujours juste après le reset)
+    - cron: "1 0 * * *"
   workflow_dispatch:        # bouton "Run workflow" pour tester à la main
 
 permissions:
