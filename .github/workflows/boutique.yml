@@ -2,9 +2,16 @@ name: Boutique Fortnite -> Instagram
 
 on:
   schedule:
-    # 00h01 UTC = 1 min après le changement de boutique
-    # (2h01 en France l'été, 1h01 l'hiver : toujours juste après le reset)
-    - cron: "1 0 * * *"
+    # La boutique change à 00h00 UTC (2h00 en France l'été, 1h00 l'hiver).
+    # GitHub retarde ou saute parfois les tâches de minuit : on prévoit plusieurs
+    # tentatives. La première qui passe publie, les suivantes voient que c'est déjà
+    # fait et s'arrêtent (pas de doublon).
+    - cron: "4 0 * * *"
+    - cron: "19 0 * * *"
+    - cron: "37 0 * * *"
+    - cron: "58 0 * * *"
+    - cron: "33 1 * * *"
+    - cron: "13 3 * * *"
   workflow_dispatch:        # bouton "Run workflow" pour lancer à la main
     inputs:
       quoi:
@@ -16,24 +23,47 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: boutique
+  cancel-in-progress: false
+
 jobs:
   post:
     runs-on: ubuntu-latest
+    env:
+      REMOTE: https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
     steps:
       - uses: actions/checkout@v4
 
+      # Déjà publié aujourd'hui ? (seulement pour les lancements automatiques)
+      - name: Vérifier si la boutique du jour est déjà publiée
+        id: check
+        run: |
+          DAY=$(date -u +%F)
+          echo "day=$DAY" >> "$GITHUB_OUTPUT"
+          if [ "${{ github.event_name }}" = "schedule" ] \
+             && git fetch -q origin images 2>/dev/null \
+             && [ "$(git show FETCH_HEAD:posted.txt 2>/dev/null)" = "$DAY" ]; then
+            echo "Déjà publié pour le $DAY : rien à faire."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: actions/setup-python@v5
+        if: steps.check.outputs.skip != 'true'
         with:
           python-version: "3.12"
 
-      - run: pip install -r requirements.txt
+      - if: steps.check.outputs.skip != 'true'
+        run: pip install -r requirements.txt
 
       - name: Générer les images de la boutique
+        if: steps.check.outputs.skip != 'true'
         run: python shop.py generate
 
       # Instagram doit pouvoir télécharger les images depuis une URL publique :
       # on les pousse sur la branche "images" du dépôt (écrasée chaque jour).
       - name: Héberger les images
+        if: steps.check.outputs.skip != 'true'
         working-directory: out
         run: |
           git init -q -b images
@@ -41,10 +71,20 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add .
           git commit -qm "Boutique du jour"
-          git push -qf "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" images
+          git push -qf "$REMOTE" images
 
       - name: Publier sur Instagram (carrousel + story)
+        if: steps.check.outputs.skip != 'true'
         env:
           IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
           IG_USER_ID: ${{ secrets.IG_USER_ID }}
         run: python shop.py post "https://raw.githubusercontent.com/${{ github.repository }}/images" "${{ inputs.quoi || 'all' }}"
+
+      - name: Marquer la boutique du jour comme publiée
+        if: steps.check.outputs.skip != 'true'
+        working-directory: out
+        run: |
+          echo "${{ steps.check.outputs.day }}" > posted.txt
+          git add posted.txt
+          git commit -qm "Publié le ${{ steps.check.outputs.day }}"
+          git push -q "$REMOTE" images
