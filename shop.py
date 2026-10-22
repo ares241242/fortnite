@@ -86,6 +86,34 @@ def glow(size, color, strength=200):
     return layer
 
 
+# Catégories de la boutique complète, dans l'ordre d'affichage
+CATEGORIES = ["PACKS", "SKINS", "DANSES", "MASCOTTES & COMPAGNONS", "CHAUSSURES", "PIOCHES",
+              "SACS À DOS", "PLANEURS", "REVÊTEMENTS", "AÉROSOLS", "VOITURES", "INSTRUMENTS",
+              "LEGO", "AUTRES"]
+TYPE_CATEGORY = {  # type d'objet (API) -> catégorie, par ordre d'importance
+    "outfit": "SKINS", "emote": "DANSES", "sidekick": "MASCOTTES & COMPAGNONS",
+    "petcarrier": "MASCOTTES & COMPAGNONS", "pet": "MASCOTTES & COMPAGNONS",
+    "shoe": "CHAUSSURES", "pickaxe": "PIOCHES", "backpack": "SACS À DOS", "glider": "PLANEURS",
+    "wrap": "REVÊTEMENTS", "spray": "AÉROSOLS",
+}
+
+
+def category(e, br):
+    if e.get("bundle"):
+        return "PACKS"
+    if e.get("cars"):
+        return "VOITURES"
+    if e.get("instruments"):
+        return "INSTRUMENTS"
+    if e.get("legoKits"):
+        return "LEGO"
+    types = {(i.get("type") or {}).get("value") for i in br}
+    for t, cat in TYPE_CATEGORY.items():  # le type le plus important de l'offre l'emporte
+        if t in types:
+            return cat
+    return "AUTRES"
+
+
 def parse_entry(e):
     """Extrait les infos d'une offre (None pour les pistes musicales seules)."""
     br = e.get("brItems") or []
@@ -120,7 +148,7 @@ def parse_entry(e):
     return {"name": name, "price": final, "regular": regular, "img": img,
             "top": c3, "bottom": c1, "strip": txt, "badge": badge,
             "in_date": (e.get("inDate") or "")[:10], "added": (first.get("added") or "")[:10],
-            "is_new": banner.get("value", "").lower() == "nouveau"}
+            "is_new": banner.get("value", "").lower() == "nouveau", "cat": category(e, br)}
 
 
 def download(url, max_side=480):
@@ -338,6 +366,76 @@ def grid_page(bg, day, page, n_pages, title, items, thumb, vbuck, shape=None, no
     return slide
 
 
+CAT_TOP, CAT_BOTTOM, CAT_M, CAT_GAP, LABEL_H = 160, 52, 24, 10, 50
+
+
+def paginate_sections(sections, cols, ch, n_pages):
+    """Répartit les catégories en pages (une catégorie peut continuer sur la page suivante).
+    Renvoie [[(titre, [rangées d'objets]), ...], ...] ou None si ça ne tient pas."""
+    avail = H - CAT_TOP - CAT_BOTTOM
+    pages, y = [[]], 0
+    for title, lst in sections:
+        rows = [lst[k:k + cols] for k in range(0, len(lst), cols)]
+        block = None
+        for row in rows:
+            need = (LABEL_H if block is None else 0) + ch + CAT_GAP
+            if y + need > avail:
+                if len(pages) == n_pages:
+                    return None
+                pages.append([])
+                y, block = 0, None
+                need = LABEL_H + ch + CAT_GAP
+            if block is None:
+                block = (title, [])
+                pages[-1].append(block)
+            block[1].append(row)
+            y += need
+    return pages
+
+
+def category_pages(items, n_pages):
+    """Choisit la plus grande taille de carte qui fait tenir toute la boutique dans n_pages."""
+    sections = [(c, [i for i in items if i["cat"] == c]) for c in CATEGORIES]
+    sections = [(c, lst) for c, lst in sections if lst]
+    for cols in (6, 7, 8):
+        cw = (W - 2 * CAT_M - (cols - 1) * CAT_GAP) // cols
+        for ch in range(int(cw * 1.35), int(cw * 0.95), -4):
+            pages = paginate_sections(sections, cols, ch, n_pages)
+            if pages:
+                return pages, cols, cw, ch
+    raise SystemExit("La boutique est trop grande pour le carrousel")
+
+
+def section_label(slide, y, title, count):
+    d = ImageDraw.Draw(slide)
+    f = font(30)
+    txt = f"{title}"
+    tw = d.textlength(txt, font=f)
+    d.rounded_rectangle((CAT_M, y + 6, CAT_M + tw + 36, y + LABEL_H - 6), radius=(LABEL_H - 12) // 2,
+                        fill=YELLOW + (255,))
+    d.text((CAT_M + 18, y + LABEL_H / 2 + 1), txt, font=f, fill=(20, 12, 40), anchor="lm")
+    d.text((CAT_M + tw + 52, y + LABEL_H / 2 + 1), f"{count} objet{'s' if count > 1 else ''}",
+           font=font(22), fill=(200, 190, 255), anchor="lm")
+    d.line((CAT_M + tw + 60 + d.textlength(f"{count} objets", font=font(22)), y + LABEL_H / 2,
+            W - CAT_M, y + LABEL_H / 2), fill=(95, 80, 160), width=2)
+
+
+def category_page(bg, day, page, n_pages, blocks, counts, cols, cw, ch, thumb, vbuck):
+    slide = bg.copy()
+    header(slide, day, page, n_pages)
+    y = CAT_TOP
+    for title, rows in blocks:
+        section_label(slide, y, title, counts[title])
+        y += LABEL_H
+        for row in rows:
+            for c, it in enumerate(row):
+                paste_with_shadow(slide, draw_card(it, thumb(it), vbuck, cw, ch),
+                                  (CAT_M + c * (cw + CAT_GAP), y))
+            y += ch + CAT_GAP
+    footer(slide, f"CODE CRÉATEUR : {CREATOR_CODE}   •   {HANDLE}")
+    return slide
+
+
 def is_new(it, day):
     """Objet jamais sorti : bandeau « Nouveau » d'Epic, ou arrivé aujourd'hui en boutique
     alors qu'il a été ajouté au jeu il y a 7 jours max."""
@@ -377,12 +475,8 @@ def generate():
     # Pages spéciales (seulement si elles ont du contenu), puis le catalogue complet
     specials = [(("LES", "NOUVEAUTÉS"), new_items), (("SORTIES", "DU JOUR"), arrivals)]
     specials = [(t, lst) for t, lst in specials if lst]
-    rest = items[HERO_N:]
-    grid_pages = MAX_SLIDES - 1 - len(specials)
-    per_page = math.ceil(len(rest) / grid_pages) if rest else 0
-    shape = grid_shape(per_page)
-    cap = shape[0] * shape[1]
-    catalog = [rest[k:k + cap] for k in range(0, min(len(rest), cap * grid_pages), cap)]
+    catalog, cols, cw_cat, ch_cat = category_pages(items, MAX_SLIDES - 1 - len(specials))
+    counts = {c: sum(1 for i in items if i["cat"] == c) for c in CATEGORIES}
     n_slides = 1 + len(specials) + len(catalog)
 
     # 1) Couverture
@@ -412,10 +506,10 @@ def generate():
         grid_page(bg, day, page, n_slides, title, lst[:36], thumb, vbuck, note=note) \
             .convert("RGB").save(out / f"{page}.jpg", "JPEG", quality=92)
 
-    # 3) Boutique complète
-    for chunk in catalog:
+    # 3) Boutique complète, rangée par catégorie
+    for blocks in catalog:
         page += 1
-        grid_page(bg, day, page, n_slides, ("BOUTIQUE", "FORTNITE"), chunk, thumb, vbuck, shape=shape) \
+        category_page(bg, day, page, n_slides, blocks, counts, cols, cw_cat, ch_cat, thumb, vbuck) \
             .convert("RGB").save(out / f"{page}.jpg", "JPEG", quality=92)
 
     # 3) Story verticale 9:16 (marges hautes/basses laissées libres pour l'interface Instagram)
