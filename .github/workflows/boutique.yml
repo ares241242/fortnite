@@ -17,7 +17,7 @@ on:
       quoi:
         description: "Que publier ?"
         type: choice
-        options: [all, feed, story]
+        options: [all, feed, story, auto]   # auto = tout publier sauf si déjà fait aujourd'hui
         default: all
 
 permissions:
@@ -41,7 +41,7 @@ jobs:
         run: |
           DAY=$(date -u +%F)
           echo "day=$DAY" >> "$GITHUB_OUTPUT"
-          if [ "${{ github.event_name }}" = "schedule" ] \
+          if { [ "${{ github.event_name }}" = "schedule" ] || [ "${{ inputs.quoi }}" = "auto" ]; } \
              && git fetch -q origin images 2>/dev/null \
              && [ "$(git show FETCH_HEAD:posted.txt 2>/dev/null)" = "$DAY" ]; then
             echo "Déjà publié pour le $DAY : rien à faire."
@@ -78,7 +78,7 @@ jobs:
         env:
           IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
           IG_USER_ID: ${{ secrets.IG_USER_ID }}
-        run: python shop.py post "https://raw.githubusercontent.com/${{ github.repository }}/images" "${{ inputs.quoi || 'all' }}"
+        run: python shop.py post "https://raw.githubusercontent.com/${{ github.repository }}/images" "${{ (inputs.quoi == 'auto' || !inputs.quoi) && 'all' || inputs.quoi }}"
 
       - name: Marquer la boutique du jour comme publiée
         if: steps.check.outputs.skip != 'true'
