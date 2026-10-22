@@ -118,7 +118,9 @@ def parse_entry(e):
     else:
         badge = (banner.get("value") or "").upper()
     return {"name": name, "price": final, "regular": regular, "img": img,
-            "top": c3, "bottom": c1, "strip": txt, "badge": badge}
+            "top": c3, "bottom": c1, "strip": txt, "badge": badge,
+            "in_date": (e.get("inDate") or "")[:10], "added": (first.get("added") or "")[:10],
+            "is_new": banner.get("value", "").lower() == "nouveau"}
 
 
 def download(url, max_side=480):
@@ -234,15 +236,20 @@ def paste_with_shadow(slide, card, xy):
     slide.alpha_composite(card, xy)
 
 
-def header(slide, day, page, n_pages, big=False, y0=0):
+def header(slide, day, page, n_pages, big=False, y0=0, title=("BOUTIQUE", "FORTNITE")):
     d = ImageDraw.Draw(slide)
     if big:
         shadow_text(d, (W // 2, y0 + 92), "BOUTIQUE", font(118), "white", offset=5)
         shadow_text(d, (W // 2, y0 + 196), "FORTNITE", font(92), YELLOW, offset=5)
         y = y0 + 268
     else:
-        shadow_text(d, (W // 2 - 8, 58), "BOUTIQUE ", font(64), "white", anchor="rm", offset=4)
-        shadow_text(d, (W // 2 - 8, 58), " FORTNITE", font(64), YELLOW, anchor="lm", offset=4)
+        left, right = title[0] + " ", " " + title[1]
+        tf = font(64)
+        while d.textlength(left + right, font=tf) > W - 260:
+            tf = font(tf.size - 2)
+        x = W // 2 + (d.textlength(left, font=tf) - d.textlength(right, font=tf)) / 2
+        shadow_text(d, (x, 58), left, tf, "white", anchor="rm", offset=4)
+        shadow_text(d, (x, 58), right, tf, YELLOW, anchor="lm", offset=4)
         y = 120
     # pastille date
     df = font(30 if big else 26)
@@ -303,24 +310,80 @@ def fetch_shop():
     sys.exit("La boutique du jour n'est pas disponible")
 
 
+def grid_shape(n):
+    """Colonnes x lignes adaptées au nombre d'objets d'une page (max 36)."""
+    for cols, rows in ((3, 1), (3, 2), (3, 3), (4, 3), (4, 4), (5, 4), (5, 5), (6, 5), (6, 6)):
+        if n <= cols * rows:
+            return cols, rows
+    return 6, 6
+
+
+def grid_page(bg, day, page, n_pages, title, items, thumb, vbuck, shape=None, note=None):
+    """Page en grille : titre, objets, pied de page avec le code créateur."""
+    slide = bg.copy()
+    header(slide, day, page, n_pages, title=title)
+    cols, rows = shape or grid_shape(len(items))
+    m, gap, top, bottom = 24, 10 if cols > 3 else 18, 160, 52 + (34 if note else 0)
+    cw = (W - 2 * m - (cols - 1) * gap) // cols
+    ch = min((H - top - bottom - (rows - 1) * gap) // rows, int(cw * 1.45))
+    used = rows * ch + (rows - 1) * gap
+    top += (H - top - bottom - used) // 2  # centre verticalement les petites grilles
+    for k, it in enumerate(items[:cols * rows]):
+        r, c = divmod(k, cols)
+        paste_with_shadow(slide, draw_card(it, thumb(it), vbuck, cw, ch, big=cols <= 3),
+                          (m + c * (cw + gap), top + r * (ch + gap)))
+    if note:
+        shadow_text(ImageDraw.Draw(slide), (W // 2, H - 70), note, font(24), "white", offset=2)
+    footer(slide, f"CODE CRÉATEUR : {CREATOR_CODE}   •   {HANDLE}")
+    return slide
+
+
+def is_new(it, day):
+    """Objet jamais sorti : bandeau « Nouveau » d'Epic, ou arrivé aujourd'hui en boutique
+    alors qu'il a été ajouté au jeu il y a 7 jours max."""
+    if it["is_new"]:
+        return True
+    if it["in_date"] != day:
+        return False
+    try:
+        delta = (time.mktime(time.strptime(day, "%Y-%m-%d"))
+                 - time.mktime(time.strptime(it["added"], "%Y-%m-%d"))) / 86400
+        return 0 <= delta <= 7
+    except ValueError:
+        return False
+
+
 def generate():
     data = fetch_shop()
     day = data["date"][:10]
     items = [p for p in (parse_entry(e) for e in data["entries"]) if p]
     items.sort(key=lambda i: -i["price"])  # les plus chers en premier
     total = len(items)
-    items = items[:HERO_N + PER_SLIDE * (MAX_SLIDES - 1)]
-    print(f"{total} objets dans la boutique du {day}")
+    new_items = [i for i in items if is_new(i, day)]
+    arrivals = [i for i in items if i["in_date"] == day and not is_new(i, day)]
+    print(f"{total} objets dans la boutique du {day} "
+          f"({len(new_items)} nouveautés, {len(arrivals)} sorties du jour)")
 
     with ThreadPoolExecutor(16) as ex:
         thumbs = list(ex.map(lambda i: download(i["img"]) if i["img"] else None, items))
+    by_id = {id(i): t for i, t in zip(items, thumbs)}
+    thumb = lambda it: by_id.get(id(it))
     vbuck = download(data.get("vbuckIcon") or "https://fortnite-api.com/images/vbuck.png", 64)
 
     out = OUT / day
     out.mkdir(parents=True, exist_ok=True)
-    rest = len(items) - HERO_N
-    n_slides = 1 + max(0, math.ceil(rest / PER_SLIDE))
     bg = background()
+
+    # Pages spéciales (seulement si elles ont du contenu), puis le catalogue complet
+    specials = [(("LES", "NOUVEAUTÉS"), new_items), (("SORTIES", "DU JOUR"), arrivals)]
+    specials = [(t, lst) for t, lst in specials if lst]
+    rest = items[HERO_N:]
+    grid_pages = MAX_SLIDES - 1 - len(specials)
+    per_page = math.ceil(len(rest) / grid_pages) if rest else 0
+    shape = grid_shape(per_page)
+    cap = shape[0] * shape[1]
+    catalog = [rest[k:k + cap] for k in range(0, min(len(rest), cap * grid_pages), cap)]
+    n_slides = 1 + len(specials) + len(catalog)
 
     # 1) Couverture
     slide = bg.copy()
@@ -328,30 +391,32 @@ def generate():
     m, gap, top = 36, 20, 320
     cw = (W - 2 * m - (HERO_COLS - 1) * gap) // HERO_COLS
     ch = (H - top - 150 - (HERO_ROWS - 1) * gap) // HERO_ROWS
-    for k in range(min(HERO_N, len(items))):
+    for k, it in enumerate(items[:HERO_N]):
         r, c = divmod(k, HERO_COLS)
-        paste_with_shadow(slide, draw_card(items[k], thumbs[k], vbuck, cw, ch, big=True),
+        paste_with_shadow(slide, draw_card(it, thumb(it), vbuck, cw, ch, big=True),
                           (m + c * (cw + gap), top + r * (ch + gap)))
     d = ImageDraw.Draw(slide)
-    shadow_text(d, (W // 2, H - 112), f"{total} OBJETS AUJOURD'HUI  •  GLISSE POUR TOUT VOIR  >>",
+    parts = [f"{len(new_items)} NOUVEAUTÉS" if new_items else "",
+             f"{len(arrivals)} SORTIES DU JOUR" if arrivals else "", f"{total} OBJETS"]
+    shadow_text(d, (W // 2, H - 112), "  •  ".join(p for p in parts if p) + "  >>",
                 font(30), "white", offset=2)
     code_pill(slide, H - 52, 30)
     slide.convert("RGB").save(out / "1.jpg", "JPEG", quality=92)
 
-    # 2) Grilles
-    m, gap, top, bottom = 24, 10, 160, 52
-    cw = (W - 2 * m - (COLS - 1) * gap) // COLS
-    ch = (H - top - bottom - (ROWS - 1) * gap) // ROWS
-    for s in range(1, n_slides):
-        slide = bg.copy()
-        header(slide, day, s + 1, n_slides)
-        start = HERO_N + (s - 1) * PER_SLIDE
-        for k, idx in enumerate(range(start, min(start + PER_SLIDE, len(items)))):
-            r, c = divmod(k, COLS)
-            paste_with_shadow(slide, draw_card(items[idx], thumbs[idx], vbuck, cw, ch),
-                              (m + c * (cw + gap), top + r * (ch + gap)))
-        footer(slide, f"CODE CRÉATEUR : {CREATOR_CODE}   •   {HANDLE}")
-        slide.convert("RGB").save(out / f"{s + 1}.jpg", "JPEG", quality=92)
+    # 2) Nouveautés et sorties du jour
+    page = 1
+    for title, lst in specials:
+        page += 1
+        extra = len(lst) - 36
+        note = f"+ {extra} AUTRES DANS LA BOUTIQUE COMPLÈTE" if extra > 0 else None
+        grid_page(bg, day, page, n_slides, title, lst[:36], thumb, vbuck, note=note) \
+            .convert("RGB").save(out / f"{page}.jpg", "JPEG", quality=92)
+
+    # 3) Boutique complète
+    for chunk in catalog:
+        page += 1
+        grid_page(bg, day, page, n_slides, ("BOUTIQUE", "FORTNITE"), chunk, thumb, vbuck, shape=shape) \
+            .convert("RGB").save(out / f"{page}.jpg", "JPEG", quality=92)
 
     # 3) Story verticale 9:16 (marges hautes/basses laissées libres pour l'interface Instagram)
     SH = 1920
@@ -372,6 +437,9 @@ def generate():
     top5 = ", ".join(i["name"] for i in items[:5])
     caption = (f"🛒 Boutique Fortnite du {date_fr(day)} !\n\n"
                f"À ne pas manquer : {top5}…\n\n"
+               + (f"🆕 {len(new_items)} nouveautés : {', '.join(i['name'] for i in new_items[:4])}…\n" if new_items else "")
+               + (f"🔁 {len(arrivals)} sorties du jour\n" if arrivals else "")
+               + ("\n" if new_items or arrivals else "") +
                "Glisse pour tout voir ➡️\n\n"
                f"💛 Soutiens-moi en utilisant le code créateur {CREATOR_CODE} dans la boutique !\n\n"
                "#fortnite #boutiquefortnite #fortniteshop #itemshop #fortnitefr #skin #EpicPartner")
