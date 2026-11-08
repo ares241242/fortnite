@@ -6,6 +6,8 @@ Usage :
   python extras.py post-retours <base>    # le publie
   python extras.py carte <ancien_etat>    # regarde si la carte a changé
   python extras.py post-carte <base>      # publie la nouvelle carte (image dans <base>/<nom>)
+  python extras.py actus <ancien_etat>    # repère les nouvelles actus du jeu
+  python extras.py post-actus <base>      # les publie en story
 
 Chaque fonction make_* renvoie une liste d'images (PIL) prêtes à publier :
   derniere_chance  story  : objets qui quittent la boutique cette nuit
@@ -234,8 +236,11 @@ def wrap(draw, text, f, max_w):
 def make_actus(max_stories=5):
     data = api("/v2/news/br")
     day = (data.get("date") or time.strftime("%Y-%m-%d"))[:10]
-    out = []
-    for motd in (data.get("motds") or [])[:max_stories]:
+    return [make_actu_story(m, day) for m in (data.get("motds") or [])[:max_stories]]
+
+
+def make_actu_story(motd, day):
+    if True:
         img = story(("ACTU", "FORTNITE"), day)
         pic = download(motd.get("image"), 1920)
         y = 520
@@ -257,8 +262,7 @@ def make_actus(max_stories=5):
             d.text((W // 2, y), line, font=font(34), fill="white", anchor="mm")
             y += 44
         code_pill(img, 1590, 44)
-        out.append(img)
-    return out
+        return img
 
 
 # ---------------------------------------------------------------- 6. Pistes Festival
@@ -382,6 +386,44 @@ def cmd_post_carte(base_url):
                 (out / "carte.txt").read_text(encoding="utf-8"))
 
 
+def motd_key(m):
+    return m.get("id") or __import__("hashlib").sha1((m.get("title", "") + m.get("body", "")).encode()).hexdigest()
+
+
+def cmd_actus(old_state_file, max_new=3):
+    """Repère les actus jamais vues. Écrit out/actus/{state.txt, decision, a_publier, actu_*.jpg}.
+    decision = post, init (premier passage : on mémorise sans publier) ou rien."""
+    out = shop.OUT / "actus"
+    out.mkdir(parents=True, exist_ok=True)
+    p = Path(old_state_file)
+    seen = set(p.read_text().split()) if p.exists() else set()
+    data = api("/v2/news/br")
+    day = (data.get("date") or time.strftime("%Y-%m-%d"))[:10]
+    motds = data.get("motds") or []
+    fresh = [m for m in motds if motd_key(m) not in seen]
+    decision = "init" if not seen else ("post" if fresh else "rien")
+    keep = list(dict.fromkeys([motd_key(m) for m in motds] + sorted(seen)))[:200]
+    (out / "state.txt").write_text("\n".join(keep))
+    (out / "decision").write_text(decision)
+    names = []
+    if decision == "post":
+        for m in fresh[:max_new]:
+            name = f"actu_{motd_key(m)[:12]}.jpg"
+            make_actu_story(m, day).convert("RGB").save(out / name, "JPEG", quality=92)
+            names.append(name)
+    (out / "a_publier").write_text("\n".join(names))
+    print(f"Actus : {decision} ({len(fresh)} nouvelle(s) sur {len(motds)})")
+
+
+def cmd_post_actus(base_url):
+    user = __import__("os").environ["IG_USER_ID"].strip()
+    for name in (shop.OUT / "actus" / "a_publier").read_text().split():
+        cid = shop.ig("POST", f"{user}/media", image_url=f"{base_url.rstrip('/')}/{name}", media_type="STORIES")["id"]
+        shop.wait_ready(cid)
+        res = shop.ig("POST", f"{user}/media_publish", creation_id=cid)
+        print(f"Story actu publiée ! id={res['id']}")
+
+
 # ---------------------------------------------------------------- Aperçu de tout
 def save(images, name, out):
     for k, img in enumerate(images, start=1):
@@ -419,5 +461,9 @@ if __name__ == "__main__":
         cmd_carte(cmd[1])
     elif cmd[0] == "post-carte" and cmd[1]:
         cmd_post_carte(cmd[1])
+    elif cmd[0] == "actus" and cmd[1]:
+        cmd_actus(cmd[1])
+    elif cmd[0] == "post-actus" and cmd[1]:
+        cmd_post_actus(cmd[1])
     else:
         sys.exit(__doc__)

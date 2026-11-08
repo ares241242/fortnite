@@ -1,0 +1,56 @@
+name: Actus du jeu -> Story Instagram
+
+# Vérifie toutes les heures si Epic a publié de nouvelles actus dans le jeu.
+# Publie une story par nouvelle actu (3 maximum par passage).
+# Au tout premier passage, mémorise les actus actuelles sans publier.
+on:
+  schedule:
+    - cron: "41 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: actus
+  cancel-in-progress: false
+
+jobs:
+  actus:
+    runs-on: ubuntu-latest
+    env:
+      REMOTE: https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install -r requirements.txt
+
+      - name: Chercher les nouvelles actus
+        id: actus
+        run: |
+          git fetch -q origin actus 2>/dev/null && git show FETCH_HEAD:state.txt > ancien_etat.txt 2>/dev/null || true
+          python extras.py actus ancien_etat.txt
+          echo "decision=$(cat out/actus/decision)" >> "$GITHUB_OUTPUT"
+
+      # La branche « actus » garde la liste des actus déjà vues et héberge les images
+      - name: Mémoriser les actus
+        if: steps.actus.outputs.decision != 'rien'
+        working-directory: out/actus
+        run: |
+          git init -q -b actus
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .
+          git commit -qm "Actus : ${{ steps.actus.outputs.decision }}"
+          git push -qf "$REMOTE" actus
+
+      - name: Publier les stories
+        if: steps.actus.outputs.decision == 'post'
+        env:
+          IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
+          IG_USER_ID: ${{ secrets.IG_USER_ID }}
+        run: python extras.py post-actus "https://raw.githubusercontent.com/${{ github.repository }}/actus"
