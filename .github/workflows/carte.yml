@@ -1,0 +1,55 @@
+name: Nouvelle carte -> Instagram
+
+# Vérifie toutes les 2 heures si la carte de l'île a changé (lieux nommés).
+# Ne publie que si elle a changé. Au tout premier passage, mémorise la carte sans publier.
+on:
+  schedule:
+    - cron: "17 */2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: carte
+  cancel-in-progress: false
+
+jobs:
+  carte:
+    runs-on: ubuntu-latest
+    env:
+      REMOTE: https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install -r requirements.txt
+
+      - name: Comparer avec la dernière carte connue
+        id: carte
+        run: |
+          git fetch -q origin carte 2>/dev/null && git show FETCH_HEAD:state.txt > ancien_etat.txt 2>/dev/null || true
+          python extras.py carte ancien_etat.txt
+          echo "decision=$(cat out/carte/decision)" >> "$GITHUB_OUTPUT"
+
+      # La branche « carte » garde l'état de la carte et héberge l'image pour Instagram
+      - name: Mémoriser la nouvelle carte
+        if: steps.carte.outputs.decision != 'rien'
+        working-directory: out/carte
+        run: |
+          git init -q -b carte
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .
+          git commit -qm "Carte : ${{ steps.carte.outputs.decision }}"
+          git push -qf "$REMOTE" carte
+
+      - name: Publier la nouvelle carte sur Instagram
+        if: steps.carte.outputs.decision == 'post'
+        env:
+          IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
+          IG_USER_ID: ${{ secrets.IG_USER_ID }}
+        run: python extras.py post-carte "https://raw.githubusercontent.com/${{ github.repository }}/carte"

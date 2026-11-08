@@ -201,7 +201,12 @@ def draw_card(item, thumb, vbuck, w, h, big=False):
     txt, f = fit_font(d, name, w - 16, 34 if big else 19, 22 if big else 13)
     shadow_text(d, (w // 2, name_y), txt, f, "white", offset=2)
 
-    # Prix
+    # Prix (ou sous-titre pour les objets sans prix, ex. leaks)
+    if item.get("price") is None:
+        sf = font(24 if big else 15)
+        sub, sf = fit_font(d, item.get("subtitle", ""), w - 14, sf.size, 10)
+        d.text((w // 2, int(h - strip_h * 0.3)), sub, font=sf, fill=(215, 210, 235), anchor="mm")
+        return _finish_card(card, d, item, w, h, big, radius)
     pf = font(32 if big else 18)
     price = f"{item['price']:,}".replace(",", " ")
     icon = vbuck.resize((pf.size + 4, pf.size + 4), Image.LANCZOS) if vbuck else None
@@ -222,6 +227,10 @@ def draw_card(item, thumb, vbuck, w, h, big=False):
         ow = d.textlength(old, font=of)
         d.line((x, py, x + ow, py), fill=(170, 170, 185), width=2)
 
+    return _finish_card(card, d, item, w, h, big, radius)
+
+
+def _finish_card(card, d, item, w, h, big, radius):
     # Badge (NOUVEAU, réduction...)
     if item["badge"]:
         bf = font(24 if big else 13)
@@ -267,8 +276,10 @@ def paste_with_shadow(slide, card, xy):
 def header(slide, day, page, n_pages, big=False, y0=0, title=("BOUTIQUE", "FORTNITE")):
     d = ImageDraw.Draw(slide)
     if big:
-        shadow_text(d, (W // 2, y0 + 92), "BOUTIQUE", font(118), "white", offset=5)
-        shadow_text(d, (W // 2, y0 + 196), "FORTNITE", font(92), YELLOW, offset=5)
+        t1, f1 = fit_font(d, title[0], W - 120, 118, 60)
+        t2, f2 = fit_font(d, title[1], W - 120, 92, 50)
+        shadow_text(d, (W // 2, y0 + 92), t1, f1, "white", offset=5)
+        shadow_text(d, (W // 2, y0 + 196), t2, f2, YELLOW, offset=5)
         y = y0 + 268
     else:
         left, right = title[0] + " ", " " + title[1]
@@ -420,9 +431,10 @@ def section_label(slide, y, title, count):
             W - CAT_M, y + LABEL_H / 2), fill=(95, 80, 160), width=2)
 
 
-def category_page(bg, day, page, n_pages, blocks, counts, cols, cw, ch, thumb, vbuck):
+def category_page(bg, day, page, n_pages, blocks, counts, cols, cw, ch, thumb, vbuck,
+                  title=("BOUTIQUE", "FORTNITE")):
     slide = bg.copy()
-    header(slide, day, page, n_pages)
+    header(slide, day, page, n_pages, title=title)
     y = CAT_TOP
     for title, rows in blocks:
         section_label(slide, y, title, counts[title])

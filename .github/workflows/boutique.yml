@@ -60,6 +60,13 @@ jobs:
         if: steps.check.outputs.skip != 'true'
         run: python shop.py generate
 
+      # Post « Retours rares » : seulement les jours où un objet revient après 180 jours ou plus.
+      # Une erreur ici ne bloque jamais la boutique.
+      - name: Préparer les retours rares
+        if: steps.check.outputs.skip != 'true'
+        continue-on-error: true
+        run: python extras.py retours
+
       # Instagram doit pouvoir télécharger les images depuis une URL publique :
       # on les pousse sur la branche "images" du dépôt (écrasée chaque jour).
       - name: Héberger les images
@@ -79,6 +86,14 @@ jobs:
           IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
           IG_USER_ID: ${{ secrets.IG_USER_ID }}
         run: python shop.py post "https://raw.githubusercontent.com/${{ github.repository }}/images" "${{ (inputs.quoi == 'auto' || !inputs.quoi) && 'all' || inputs.quoi }}"
+
+      - name: Publier les retours rares (s'il y en a)
+        if: steps.check.outputs.skip != 'true' && (inputs.quoi == 'auto' || inputs.quoi == 'all' || !inputs.quoi)
+        continue-on-error: true
+        env:
+          IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
+          IG_USER_ID: ${{ secrets.IG_USER_ID }}
+        run: python extras.py post-retours "https://raw.githubusercontent.com/${{ github.repository }}/images"
 
       - name: Marquer la boutique du jour comme publiée
         if: steps.check.outputs.skip != 'true'
