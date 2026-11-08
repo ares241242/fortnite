@@ -1,0 +1,13 @@
+{
+  "_aide": "Dates en heure universelle (UTC). confirme=false affiche « FIN PRÉVUE » au lieu de « FIN ». rappels = nombre de jours restants où une story est publiée (0 = dernier jour).",
+  "rappels": [30, 14, 7, 3, 2, 1, 0],
+  "evenements": [
+    {
+      "nom": "SAISON ONE PIECE",
+      "type": "saison",
+      "debut": "2026-11-01T09:00:00Z",
+      "fin": "2026-12-05T09:00:00Z",
+      "confirme": false
+    }
+  ]
+}

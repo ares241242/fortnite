@@ -311,6 +311,120 @@ def make_recap(history_full, day, max_items=30):
     return [img]
 
 
+# ---------------------------------------------------------------- 8. Compte à rebours
+EVENTS_FILE = Path(__file__).parent / "evenements.json"
+DAYS_FR = ["LUNDI", "MARDI", "MERCREDI", "JEUDI", "VENDREDI", "SAMEDI", "DIMANCHE"]
+
+
+def iso_ts(iso):
+    return __import__("calendar").timegm(time.strptime(iso[:19], "%Y-%m-%dT%H:%M:%S"))
+
+
+def paris(ts):
+    """Heure de Paris (règle européenne : +2 h du dernier dimanche de mars au dernier dimanche d'octobre)."""
+    y = time.gmtime(ts).tm_year
+
+    def last_sunday(month):  # dernier dimanche du mois, 01:00 UTC
+        for d in range(31, 24, -1):
+            t = __import__("calendar").timegm((y, month, d, 1, 0, 0))
+            if time.gmtime(t).tm_wday == 6:
+                return t
+    return time.gmtime(ts + (7200 if last_sunday(3) <= ts < last_sunday(10) else 3600))
+
+
+def days_left(end_ts, now_ts):
+    a, b = paris(now_ts), paris(end_ts)
+    return (__import__("datetime").date(b.tm_year, b.tm_mon, b.tm_mday)
+            - __import__("datetime").date(a.tm_year, a.tm_mon, a.tm_mday)).days
+
+
+def make_countdown(ev, now_ts, art=None):
+    end, start = iso_ts(ev["fin"]), iso_ts(ev.get("debut") or ev["fin"])
+    n = days_left(end, now_ts)
+    p = paris(end)
+    title = ("FIN DE", "SAISON") if ev.get("type", "saison") == "saison" else ("FIN DE", "L'ÉVÉNEMENT")
+    img = background(SH)
+    header(img, time.strftime("%Y-%m-%d", time.gmtime(now_ts)), 0, 0, big=True, y0=100, title=title)
+    d = ImageDraw.Draw(img)
+    t, f = fit_font(d, ev["nom"], W - 120, 52, 30)
+    shadow_text(d, (W // 2, 455), t, f, "white", offset=3)
+    y = 510
+    if art:
+        pic = art.convert("RGBA")
+        pw = W - 72
+        pic = pic.resize((pw, int(pic.height * pw / pic.width)), Image.LANCZOS)
+        pic = pic.crop((0, 0, pw, min(pic.height, 520)))
+        mask = Image.new("L", pic.size, 0)
+        ImageDraw.Draw(mask).rounded_rectangle((0, 0, pic.width - 1, pic.height - 1), radius=28, fill=255)
+        pic.putalpha(mask)
+        paste_with_shadow(img, pic, (36, y))
+        y += pic.height
+    # Grand chiffre
+    d = ImageDraw.Draw(img)
+    if n <= 0:
+        shadow_text(d, (W // 2, y + 170), "DERNIER", font(150), YELLOW, offset=6)
+        shadow_text(d, (W // 2, y + 310), "JOUR !", font(150), YELLOW, offset=6)
+    else:
+        shadow_text(d, (W // 2, y + 190), str(n), font(280), YELLOW, offset=8)
+        shadow_text(d, (W // 2, y + 360), "JOUR RESTANT" if n == 1 else "JOURS RESTANTS", font(64), "white", offset=4)
+    # Barre de progression de la saison
+    by = y + 450
+    frac = max(0.0, min(1.0, (now_ts - start) / max(1, end - start)))
+    d.rounded_rectangle((90, by, W - 90, by + 34), radius=17, fill=(255, 255, 255, 255), outline=None)
+    d.rounded_rectangle((94, by + 4, W - 94, by + 30), radius=13, fill=(40, 25, 90))
+    if frac > 0.02:
+        d.rounded_rectangle((94, by + 4, 94 + int((W - 188) * frac), by + 30), radius=13, fill=YELLOW)
+    d.text((W // 2, by + 70), f"{round(frac * 100)} % DE LA SAISON ÉCOULÉS" if title[1] == "SAISON"
+           else f"{round(frac * 100)} % DE L'ÉVÉNEMENT ÉCOULÉS", font=font(30), fill=(210, 200, 255), anchor="mm")
+    when = (f"{'FIN' if ev.get('confirme') else 'FIN PRÉVUE'} LE {DAYS_FR[p.tm_wday]} {p.tm_mday} "
+            f"{shop.MONTHS[p.tm_mon - 1].upper()} VERS {p.tm_hour}H")
+    t, f = fit_font(d, when, W - 100, 34, 22)
+    shadow_text(d, (W // 2, by + 125), t, f, "white", offset=2)
+    code_pill(img, 1700, 44)
+    return img, n
+
+
+def load_events():
+    return __import__("json").loads(EVENTS_FILE.read_text(encoding="utf-8"))
+
+
+def season_art():
+    try:
+        motds = api("/v2/news/br").get("motds") or []
+        return download(motds[0]["image"], 1600) if motds else None
+    except Exception:
+        return None
+
+
+def cmd_rebours():
+    """Prépare les stories de compte à rebours du jour (seulement les jours de rappel)."""
+    cfg, now = load_events(), time.time()
+    out = shop.OUT / "rebours"
+    out.mkdir(parents=True, exist_ok=True)
+    names, art = [], None
+    for ev in cfg["evenements"]:
+        n = days_left(iso_ts(ev["fin"]), now)
+        if n < 0 or n not in cfg.get("rappels", []):
+            print(f"{ev['nom']} : J-{n}, pas de rappel aujourd'hui")
+            continue
+        art = art or season_art()
+        img, _ = make_countdown(ev, now, ev.get("image") and download(ev["image"], 1600) or art)
+        name = f"rebours_{re.sub(r'[^a-z0-9]+', '_', ev['nom'].lower())}_{n}.jpg"
+        img.convert("RGB").save(out / name, "JPEG", quality=92)
+        names.append(name)
+        print(f"{ev['nom']} : J-{n} -> {name}")
+    (out / "a_publier").write_text("\n".join(names))
+
+
+def cmd_post_stories(folder, base_url):
+    user = __import__("os").environ["IG_USER_ID"].strip()
+    for name in (shop.OUT / folder / "a_publier").read_text().split():
+        cid = shop.ig("POST", f"{user}/media", image_url=f"{base_url.rstrip('/')}/{name}", media_type="STORIES")["id"]
+        shop.wait_ready(cid)
+        res = shop.ig("POST", f"{user}/media_publish", creation_id=cid)
+        print(f"Story publiée ({name}) ! id={res['id']}")
+
+
 # ---------------------------------------------------------------- Publication automatique
 HASHTAGS = "#fortnite #boutiquefortnite #fortnitefr #fortniteshop #EpicPartner"
 
@@ -461,6 +575,18 @@ if __name__ == "__main__":
         cmd_carte(cmd[1])
     elif cmd[0] == "post-carte" and cmd[1]:
         cmd_post_carte(cmd[1])
+    elif cmd[0] == "rebours":
+        cmd_rebours()
+    elif cmd[0] == "post-rebours" and cmd[1]:
+        cmd_post_stories("rebours", cmd[1])
+    elif cmd[0] == "apercu-rebours":
+        out = shop.OUT / "preview"
+        out.mkdir(parents=True, exist_ok=True)
+        ev, art = load_events()["evenements"][0], season_art()
+        for jours in (27, 7, 1, 0):
+            img, _ = make_countdown(ev, iso_ts(ev["fin"]) - jours * 86400 - 3600, art)
+            img.convert("RGB").save(out / f"8_rebours_J{jours}.jpg", "JPEG", quality=90)
+            print("  ", out / f"8_rebours_J{jours}.jpg")
     elif cmd[0] == "actus" and cmd[1]:
         cmd_actus(cmd[1])
     elif cmd[0] == "post-actus" and cmd[1]:
