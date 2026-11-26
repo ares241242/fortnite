@@ -12,6 +12,8 @@ on:
     - cron: "58 0 * * *"
     - cron: "33 1 * * *"
     - cron: "13 3 * * *"
+    # Si l'API de la boutique est en panne : nouvelle tentative toutes les 2 h dans la journée
+    - cron: "47 5-21/2 * * *"
   workflow_dispatch:        # bouton "Run workflow" pour lancer à la main
     inputs:
       quoi:
@@ -33,7 +35,7 @@ jobs:
     env:
       REMOTE: https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # Déjà publié aujourd'hui ? (seulement pour les lancements automatiques)
       - name: Vérifier si la boutique du jour est déjà publiée
@@ -48,7 +50,7 @@ jobs:
             echo "skip=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         if: steps.check.outputs.skip != 'true'
         with:
           python-version: "3.12"
@@ -56,21 +58,27 @@ jobs:
       - if: steps.check.outputs.skip != 'true'
         run: pip install -r requirements.txt
 
+      # Les tentatives de secours n'envoient pas d'e-mail d'erreur si l'API est en panne :
+      # elles attendent 8 min puis laissent la place à la suivante.
       - name: Générer les images de la boutique
+        id: gen
         if: steps.check.outputs.skip != 'true'
+        continue-on-error: ${{ github.event_name == 'schedule' }}
+        env:
+          SHOP_WAIT_MIN: ${{ github.event_name == 'schedule' && '8' || '20' }}
         run: python shop.py generate
 
       # Post « Retours rares » : seulement les jours où un objet revient après 180 jours ou plus.
       # Une erreur ici ne bloque jamais la boutique.
       - name: Préparer les retours rares
-        if: steps.check.outputs.skip != 'true'
+        if: steps.check.outputs.skip != 'true' && steps.gen.outcome == 'success'
         continue-on-error: true
         run: python extras.py retours
 
       # Instagram doit pouvoir télécharger les images depuis une URL publique :
       # on les pousse sur la branche "images" du dépôt (écrasée chaque jour).
       - name: Héberger les images
-        if: steps.check.outputs.skip != 'true'
+        if: steps.check.outputs.skip != 'true' && steps.gen.outcome == 'success'
         working-directory: out
         run: |
           git init -q -b images
@@ -81,14 +89,14 @@ jobs:
           git push -qf "$REMOTE" images
 
       - name: Publier sur Instagram (carrousel + story)
-        if: steps.check.outputs.skip != 'true'
+        if: steps.check.outputs.skip != 'true' && steps.gen.outcome == 'success'
         env:
           IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
           IG_USER_ID: ${{ secrets.IG_USER_ID }}
         run: python shop.py post "https://raw.githubusercontent.com/${{ github.repository }}/images" "${{ (inputs.quoi == 'auto' || !inputs.quoi) && 'all' || inputs.quoi }}"
 
       - name: Publier les retours rares (s'il y en a)
-        if: steps.check.outputs.skip != 'true' && (inputs.quoi == 'auto' || inputs.quoi == 'all' || !inputs.quoi)
+        if: steps.check.outputs.skip != 'true' && steps.gen.outcome == 'success' && (inputs.quoi == 'auto' || inputs.quoi == 'all' || !inputs.quoi)
         continue-on-error: true
         env:
           IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
@@ -96,7 +104,7 @@ jobs:
         run: python extras.py post-retours "https://raw.githubusercontent.com/${{ github.repository }}/images"
 
       - name: Marquer la boutique du jour comme publiée
-        if: steps.check.outputs.skip != 'true'
+        if: steps.check.outputs.skip != 'true' && steps.gen.outcome == 'success'
         working-directory: out
         run: |
           echo "${{ steps.check.outputs.day }}" > posted.txt

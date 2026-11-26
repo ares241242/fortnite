@@ -335,9 +335,9 @@ def footer(slide, text):
 
 
 def fetch_shop():
-    """Attend (jusqu'à 20 min) que la boutique du jour soit en ligne juste après le reset."""
+    """Attend que la boutique du jour soit en ligne (20 min par défaut, SHOP_WAIT_MIN pour changer)."""
     today = time.strftime("%Y-%m-%d", time.gmtime())
-    for _ in range(40):
+    for _ in range(int(os.environ.get("SHOP_WAIT_MIN", "20")) * 2):
         try:
             data = requests.get(SHOP_URL, timeout=60).json()["data"]
             if data["date"][:10] == today:

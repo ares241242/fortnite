@@ -364,7 +364,12 @@ def cmd_carte(old_state_file):
     out = shop.OUT / "carte"
     out.mkdir(parents=True, exist_ok=True)
     old = Path(old_state_file).read_text().strip() if Path(old_state_file).exists() else ""
-    state, data = map_state()
+    try:
+        state, data = map_state()
+    except requests.RequestException as e:  # API en panne : on réessaiera au prochain passage
+        print(f"::warning::API indisponible ({e}), carte non vérifiée")
+        (out / "decision").write_text("rien")
+        return
     decision = "rien" if state == old else ("init" if not old else "post")
     (out / "state.txt").write_text(state)
     (out / "decision").write_text(decision)
@@ -397,7 +402,13 @@ def cmd_actus(old_state_file, max_new=3):
     out.mkdir(parents=True, exist_ok=True)
     p = Path(old_state_file)
     seen = set(p.read_text().split()) if p.exists() else set()
-    data = api("/v2/news/br")
+    try:
+        data = api("/v2/news/br")
+    except requests.RequestException as e:  # API en panne : on réessaiera au prochain passage
+        print(f"::warning::API indisponible ({e}), actus non vérifiées")
+        (out / "decision").write_text("rien")
+        (out / "a_publier").write_text("")
+        return
     day = (data.get("date") or time.strftime("%Y-%m-%d"))[:10]
     motds = data.get("motds") or []
     fresh = [m for m in motds if motd_key(m) not in seen]
